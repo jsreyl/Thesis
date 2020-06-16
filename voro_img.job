@@ -1,0 +1,16 @@
+#!/bin/bash
+
+#First load all the files we want to plot using povray
+files=post/voro_ixyzr_*.txt
+
+#For each one of them
+for file in $files; do
+    #Load both particle and voronoi files
+    pfile=\"${file}_p.pov\"
+    vfile=\"${file}_v.pov\"
+    #And pass them as arguments
+    args=$pfile,$vfile
+    #Save the resulting image in a new file on /anim/
+    nfile="${file/post/anim}";nfile="${nfile/txt/png}"
+    povray +O$nfile "import.pov" <<<$args
+done

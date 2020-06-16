@@ -1,3 +1,4 @@
+import os
 import sys
 import numpy as np
 import glob
@@ -190,15 +191,15 @@ def get_mask(x,y,z,radius,limits):
 #---------------Histograms--------------------------------------------
 """
 We need two histograms
-1. Fuerza de contacto por grano
-2. Volume distributions of Voronoï cells (TO DO, use voro++)
+1. Contact force per grain (or rather pressure per grain)
+2. Volume distributions of Voronoï cells (using voro++)
 """
 def pressure_per_particle(ID, ID1, ID2, cfx,cfy,cfz,mask_pos_contacts):
     """
     This function calculates the pressure for each particle in the packing, defined as
     P = \sum_{i=1}^{z} |fn_i|
     where z is the contact number, fn the contact (normal) force between that particle and its contact
-    INPUT: IDs, cf, mask_pos-> IDs of all particles and particles in contact pairs, contact force arrays and position mask
+    INPUT: IDs, cf-> IDs of all particles and particles in contact pairs, contact force arrays and a mask to select only particles in a position and force range
     OUTPUT: P -> an array containing the pressure for each particle 
     """
     auxlog=INFOPRINT("Calculating pressure for each particle")
@@ -226,18 +227,18 @@ def pressure_per_particle(ID, ID1, ID2, cfx,cfy,cfz,mask_pos_contacts):
             sys.exit(1)
         pressure_full[IDmatch]=pressure_contacts[i]
     return pressure_full
-        
     
-def histogram_pressure_per_particle(press,step, mask_pos,autonbins=True,nbins=20,fname=""):
+def histogram_pressure_per_particle(press,step,autonbins=True,nbins=20,fname=""):
     """
     This function takes info from a pressure array and outputs a file containing the bins to graph a histogram
     INPUT: press, step, mask_pos, autonbins, nbins -> an array containing the pressure of each particle, time step of the simulation, mask for filtering particles, a bool for letting numpy calculate the optimal bins for the histogram, if falsee specify the number of bins
+    OUTPUT: post/histo_nc_press{fname}_{step}.txt: a file containing pressure bins and number of contacts on that bin
     """
     auxlog=INFOPRINT("Calculating histogram pressure per particle")
     if autonbins:
-        Nhist,Pbin_edges=np.histogram(press[mask_pos],bins='auto')
+        Nhist,Pbin_edges=np.histogram(press,bins='auto')
     else:
-        Nhist,Pbin_edges=np.histogram(press[mask_pos],bins=nbins)
+        Nhist,Pbin_edges=np.histogram(press,bins=nbins)
 
     #If we want an histogram, it's easier to use matplotlib's hist, however numpy can be useful for creating a graph, in which case we can use the half-bin-value to average the pressure per particle.
     Phalf=np.zeros(len(Pbin_edges)-1)
@@ -247,8 +248,85 @@ def histogram_pressure_per_particle(press,step, mask_pos,autonbins=True,nbins=20
     np.savetxt(f"post/histo_nc_press{fname}_{step}.txt",np.column_stack((Phalf,Nhist)))
 
 def print_pressure(press,step,fname):
+    """
+    This function prints a file with pressure per particle info to be used by plt's histogram
+    INPUT: press, step, fname -> array containing pressure calcuulated for each particle, timestep of the simulation and fname an additional name indicator for the file
+    OUTPUT: post/pressure_per_particle{fname}_{step}.txt : file containing the pressure array
+    """
     auxlog=INFOPRINT("Printing pressure to file")
     np.savetxt(f"post/pressure_per_particle{fname}_{step}.txt",np.column_stack((press)))
+
+
+def voronoi_volume(x,y,z,rad,step, reuse_vorofile=False):
+    """
+    This function takes the particle postion info and uses voro++ to calculat the voronoi cell volumes as well as creating .pov files to visualize the distribution using povray
+    INPUT: x,y,z,rad,step,reuse_vorofile -> arrays containing the position of each partivle, timestep of the simulation and whether to reuse a pre existing voro file
+    OUTPUT: vorovol -> array containing voronoi volumes indexed as particles
+            voro_ixyzr.txt.vol, voro_ixyzr.txt_p.pov, voro_ixyzr.txt_v.pov: files for processing
+    """
+    auxlog=INFOPRINT("Computing Voronoi cell volumes using voro++ on command line")
+    #To use voro++ we need a file formated as ID x y z rad
+    FNAME="post/voro_ixyzr_"+str(step)+".txt"
+    #We might use these files later on a cpp code for voro++ to generate .pov images and an animation
+    vorofile_exists= os.path.isfile(FNAME+".vol")
+    if vorofile_exists and reuse_vorofile:
+        print(WARNING + "Reading voro data from existing file: "+FNAME+".vol")
+    else:
+        print("# Saving coordinates on .vol file")
+        #file should be formated as <id> <x> <y> <z>
+        #in case of polydisperse distribution also add <r> and add the argument -r to voro++ below
+        np.savetxt(FNAME, np.column_stack((np.arange(len(x),dtype=np.int64),x,y,z)),fmt="%i %.18e %.18e %.18e")
+        #arguments for voro++ on command line
+        #voro++ <args> <xmin> <xmax> <ymin> <ymax> <zmin> <zmax> <filename>
+        #for more info http://math.lbl.gov/voro++/doc/cmd.html
+        #we're using -v verbose and -o ordering so the output file uses the same ids as the particles
+        #other useful args are -r for polydisperse distributions, -p for periodic boundaries and -y for printing .pov files for particles and voro cells
+        args = " -v -o -y "+str((x-rad).min())+" "+str((x+rad).max())+" "+str((y-rad).min())+" "+str((y+rad).max())+" "+str((z-rad).min())+" "+str((z+rad).max())+" "+FNAME
+        print("# Calling voro++ (this might take a few minutes ...) ")
+        print(f"# args for voro++: {args}")
+        os.system("voro++ "+args)
+    #Now that we have our .vol file load it
+    IFNAME=FNAME+".vol"
+    print(f"# Loading and filtering voro data from {IFNAME} ...")
+    ii,xvoro,yvoro,zvoro,vorovol=np.loadtxt(IFNAME, unpack=True)
+    print("# Checking voro data ...")
+    if xvoro.size != x.size:
+        print(ERROR + "total data read is different from original data")
+        print(ERROR + f"x.size:     {x.size}")
+        print(ERROR + f"xvoro.size: {xvoro.size}")
+        sys.exit(1)
+    else:
+        print("All seems right!")
+    return vorovol
+
+def histogram_volume_per_cell(vorovol,step, mask_pos,autonbins=True,nbins=20,fname=""):
+    """
+    This function takes info from a voronoi cell volume array and outputs a file containing the bins to graph a histogram
+    INPUT: vorovol, step, mask_pos, autonbins, nbins -> an array containing the volume of each voronoi cell, time step of the simulation, mask for filtering particles, a bool for letting numpy calculate the optimal bins for the histogram, if falsee specify the number of bins
+    OUTPUT: post/histo_vorocells_vol{name}_{step}.txt : file containing volume bins and number of voronoi cells in that bin
+    """
+    auxlog=INFOPRINT("Calculating histogram volume per voronoi cell")
+    if autonbins:
+        Nhist,Vbin_edges=np.histogram(vorovol[mask_pos],bins='auto')
+    else:
+        Nhist,Vbin_edges=np.histogram(vorovol[mask_pos],bins=nbins)
+
+    #If we want an histogram, it's easier to use matplotlib's hist, however numpy can be useful for creating a graph, in which case we can use the half-bin-value to average the pressure per particle.
+    Vhalf=np.zeros(len(Vbin_edges)-1)
+    for i in np.arange(len(Vbin_edges)-1):
+        Vhalf[i]=0.5*(Vbin_edges[i]+Vbin_edges[i+1])
+    Nhist=np.nan_to_num(Nhist)
+    np.savetxt(f"post/histo_vorocells_vol{fname}_{step}.txt",np.column_stack((Vhalf,Nhist)))
+
+def print_vorovol(vorovol,step,fname):
+    """
+    This function prints a file with voronoi cell volume info to be used by plt's histogram
+    INPUT: vorovol, step, fname -> array containing volume of each voroni cell, timestep of the simulation and fname an additional name indicator for the file
+    OUTPUT: post/vol_per_vorocell{fname}_{step}.txt : file containing the vorovol array
+    """
+    auxlog=INFOPRINT("Printing voronoi cell volume array to file")
+    np.savetxt(f"post/vol_per_vorocell{fname}_{step}.txt",np.column_stack((vorovol)))
+
 
 #------------Series computation---------------
 def series(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vorofile=False):
@@ -311,13 +389,21 @@ def series(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vo
                 opfile.write("{} {}\n".format(step, packing_fraction(x,y,z,r,limits,mask_pos,screen)))
                 ozfile.write("{} {}\n".format(step, mean_coordination_number(mask_pos,mask_pos_contacts)))
                 ocufile.write("{} {} {} \n".format(step, *cundall(fx,fy,fz,fcx,fcy,fcz,mask_pos,mask_pos_contacts)))
-                
+
+                #Calculate pressure histograms
                 pressure_filtered=pressure_per_particle(ID, ID1, ID2, fcx,fcy,fcz,mask_pos_contacts)
-                histogram_pressure_per_particle(pressure_filtered,step,mask_pos,fname="_filtered")
+                histogram_pressure_per_particle(pressure_filtered[pressure_filtered != 0.],step,fname="_filtered")
                 print_pressure(pressure_filtered,step,fname="_filtered")
                 pressure_total=pressure_per_particle(ID,ID1,ID2,fcx,fcy,fcz,np.ones(ID1.size,dtype=bool))
-                histogram_pressure_per_particle(pressure_total,step,np.ones(ID.size,dtype=bool),fname="_total")
+                histogram_pressure_per_particle(pressure_total,step,fname="_total")
                 print_pressure(pressure_total,step,fname="_total")
+
+                #Calculate volume histograms
+                vorovol=voronoi_volume(x,y,z,r,step)
+                histogram_volume_per_cell(vorovol,step,mask_pos,fname="_filtered")
+                print_vorovol(vorovol[mask_pos],step,fname="_filtered")
+                histogram_volume_per_cell(vorovol,step,np.ones(ID.size, dtype=bool),fname="_total")
+                print_vorovol(vorovol,step,fname="_total")
                 
             except Exception as e:
                 print(e)
@@ -329,7 +415,7 @@ def series(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vo
 #fname = sys.argv[1].replace(".py","")#that is filename = postproc
 #config = importlib.import_module(fname)#import all the functions to this code
 #call postproc
-series(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vorofile=False)
+series(screen_factor=np.zeros(3),stride=10,only_last=False, ncmin=2, reuse_vorofile=False)
 
                 
                 

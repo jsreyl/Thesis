@@ -1,0 +1,7 @@
+#!/bin/bash
+
+for i in voro_ixyzr_*; do echo $i; done >filelist.txt
+cat filelist.txt | tr "_" " " |  sort -k3n | tr " " "_" >filesorted.txt
+while read -r line; do echo "file $line"; done < filesorted.txt > images.txt
+rm filelist.txt
+rm filesorted.txt
