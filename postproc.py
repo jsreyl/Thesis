@@ -247,21 +247,21 @@ def histogram_pressure_per_particle(press,step,autonbins=True,nbins=20,fname="")
     Nhist=np.nan_to_num(Nhist)
     np.savetxt(f"post/histo_nc_press{fname}_{step}.txt",np.column_stack((Phalf,Nhist)))
 
-def print_pressure(press,step,fname):
+def print_pressure(press,full_counts,step,fname):
     """
     This function prints a file with pressure per particle info to be used by plt's histogram
-    INPUT: press, step, fname -> array containing pressure calcuulated for each particle, timestep of the simulation and fname an additional name indicator for the file
+    INPUT: press, full_counts, step, fname -> array containing pressure calculated for each particle, number of contacts for each timestep of the simulation and fname an additional name indicator for the file
     OUTPUT: post/pressure_per_particle{fname}_{step}.txt : file containing the pressure array
     """
     auxlog=INFOPRINT("Printing pressure to file")
-    np.savetxt(f"post/pressure_per_particle{fname}_{step}.txt",np.column_stack((press)))
+    np.savetxt(f"post/pressure_per_particle{fname}_{step}.txt",np.column_stack((press,full_counts)))
 
 
 def voronoi_volume(x,y,z,rad,step, reuse_vorofile=False):
     """
     This function takes the particle postion info and uses voro++ to calculat the voronoi cell volumes as well as creating .pov files to visualize the distribution using povray
     INPUT: x,y,z,rad,step,reuse_vorofile -> arrays containing the position of each partivle, timestep of the simulation and whether to reuse a pre existing voro file
-    OUTPUT: vorovol -> array containing voronoi volumes indexed as particles
+    OUTPUT: vorovol,vertexes,edges,faces,area -> arrays containing voronoi volumes, number of vertices, edges, faces and total area of a voronoi cell indexed as the particles
             voro_ixyzr.txt.vol, voro_ixyzr.txt_p.pov, voro_ixyzr.txt_v.pov: files for processing
     """
     auxlog=INFOPRINT("Computing Voronoi cell volumes using voro++ on command line")
@@ -280,15 +280,17 @@ def voronoi_volume(x,y,z,rad,step, reuse_vorofile=False):
         #voro++ <args> <xmin> <xmax> <ymin> <ymax> <zmin> <zmax> <filename>
         #for more info http://math.lbl.gov/voro++/doc/cmd.html
         #we're using -v verbose and -o ordering so the output file uses the same ids as the particles
+        #Use -c to print a custom output "%i %q %w %g %s %F %v"
+        #this means ID Position_coodinates #_of_vertexes #_of_edges #_of_faces Superficial_area Voronoi_volume
         #other useful args are -r for polydisperse distributions, -p for periodic boundaries and -y for printing .pov files for particles and voro cells
-        args = " -v -o -y "+str((x-rad).min())+" "+str((x+rad).max())+" "+str((y-rad).min())+" "+str((y+rad).max())+" "+str((z-rad).min())+" "+str((z+rad).max())+" "+FNAME
+        args = " -v -o -y -c \"%i %q %w %g %s %F %v\" "+str((x-rad).min())+" "+str((x+rad).max())+" "+str((y-rad).min())+" "+str((y+rad).max())+" "+str((z-rad).min())+" "+str((z+rad).max())+" "+FNAME
         print("# Calling voro++ (this might take a few minutes ...) ")
         print(f"# args for voro++: {args}")
         os.system("voro++ "+args)
     #Now that we have our .vol file load it
     IFNAME=FNAME+".vol"
     print(f"# Loading and filtering voro data from {IFNAME} ...")
-    ii,xvoro,yvoro,zvoro,vorovol=np.loadtxt(IFNAME, unpack=True)
+    ii,xvoro,yvoro,zvoro,vertexes,edges,faces,area,vorovol=np.loadtxt(IFNAME, unpack=True)
     print("# Checking voro data ...")
     if xvoro.size != x.size:
         print(ERROR + "total data read is different from original data")
@@ -297,7 +299,7 @@ def voronoi_volume(x,y,z,rad,step, reuse_vorofile=False):
         sys.exit(1)
     else:
         print("All seems right!")
-    return vorovol
+    return vorovol,vertexes, edges, faces, area
 
 def histogram_volume_per_cell(vorovol,step, mask_pos,autonbins=True,nbins=20,fname=""):
     """
@@ -318,14 +320,14 @@ def histogram_volume_per_cell(vorovol,step, mask_pos,autonbins=True,nbins=20,fna
     Nhist=np.nan_to_num(Nhist)
     np.savetxt(f"post/histo_vorocells_vol{fname}_{step}.txt",np.column_stack((Vhalf,Nhist)))
 
-def print_vorovol(vorovol,step,fname):
+def print_vorovol(vorovol,vertices,edges,faces,area,step,fname):
     """
     This function prints a file with voronoi cell volume info to be used by plt's histogram
-    INPUT: vorovol, step, fname -> array containing volume of each voroni cell, timestep of the simulation and fname an additional name indicator for the file
-    OUTPUT: post/vol_per_vorocell{fname}_{step}.txt : file containing the vorovol array
+    INPUT: vorovol, vertices, edges, faces, area, step, fname -> arrays containing volume of each voroni cell,number of vertices,edges,faces and total area, timestep of the simulation and fname an additional name indicator for the file
+    OUTPUT: post/vol_per_vorocell{fname}_{step}.txt : file containing the voronoi info arrays
     """
     auxlog=INFOPRINT("Printing voronoi cell volume array to file")
-    np.savetxt(f"post/vol_per_vorocell{fname}_{step}.txt",np.column_stack((vorovol)))
+    np.savetxt(f"post/vol_per_vorocell{fname}_{step}.txt",np.column_stack((vorovol,vertices,edges,faces,area)))
 
 
 #------------Series computation---------------
@@ -393,21 +395,86 @@ def series(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vo
                 #Calculate pressure histograms
                 pressure_filtered=pressure_per_particle(ID, ID1, ID2, fcx,fcy,fcz,mask_pos_contacts)
                 histogram_pressure_per_particle(pressure_filtered[pressure_filtered != 0.],step,fname="_filtered")
-                print_pressure(pressure_filtered,step,fname="_filtered")
+                print_pressure(pressure_filtered, counts,step,fname="_filtered")
                 pressure_total=pressure_per_particle(ID,ID1,ID2,fcx,fcy,fcz,np.ones(ID1.size,dtype=bool))
                 histogram_pressure_per_particle(pressure_total,step,fname="_total")
-                print_pressure(pressure_total,step,fname="_total")
+                print_pressure(pressure_total,counts,step,fname="_total")
 
                 #Calculate volume histograms
-                vorovol=voronoi_volume(x,y,z,r,step)
+                vorovol,vertices,edges,faces,area=voronoi_volume(x,y,z,r,step)
                 histogram_volume_per_cell(vorovol,step,mask_pos,fname="_filtered")
-                print_vorovol(vorovol[mask_pos],step,fname="_filtered")
+                print_vorovol(vorovol[mask_pos],vertices[mask_pos],edges[mask_pos],faces[mask_pos],area[mask_pos],step,fname="_filtered")
                 histogram_volume_per_cell(vorovol,step,np.ones(ID.size, dtype=bool),fname="_total")
-                print_vorovol(vorovol,step,fname="_total")
+                print_vorovol(vorovol,vertices,edges,faces,area,step,fname="_total")
                 
             except Exception as e:
                 print(e)
                 pass
+            
+def series_eq(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vorofile=False,folder=1):
+    print(f'# Innitiating equilibrium postprocessing to read every {stride} files.')
+    if only_last==True:
+        print('# Using only last file')
+    #files to write information in: packing fraction, coordination number, cundall constant.
+    #contacts_pattern are dump files from LIGGGHTS
+    contacts_pattern="out_"+str(folder)+"/dump-contacts_*.gz"
+    packfile="post/packing_fraction_"+str(folder)+".txt"
+    zfile="post/z_"+str(folder)+".txt"
+    cundallfile="post/cundall_"+str(folder)+".txt"
+    with open(packfile,'w') as opfile, open(zfile,'w') as ozfile, open(cundallfile,'w') as ocufile:
+        fnames=glob.glob(contacts_pattern)#A list with the names of all dump_contacts files
+        #sort the list using the time step number, that is dump-contacts_350.gz should go before dump-contacts_500.gz
+        #in order to do this split the name using the _ choosing the last part (350.gz) and then the . choosing the first part (350)
+        fnames.sort(key=lambda x: int(x.split('_')[-1].split('.')[0]))
+        ii=0
+        for fname, ii in zip(fnames,range(len(fnames))):
+            if ii%stride != 0 and fname != fnames[-1] and fname != fnames[0]:
+                continue
+            if only_last and fname != fnames[-1]:
+                continue
+            step=int(fname.split('_')[-1].split('.')[0])
+            print(77*"#")
+            print(INFO+f" Processing step: {step}\n")
+            #Use try excerpt to get errors
+            try:
+                #read particle data, from our naming convention out/dump_*.gz contains particle information while out/dump-contacts_*.gz contains per pair contact info
+                ID,TYPE,mass,x,y,z,vx,vy,vz,fx,fy,fz,r,omegax,omegay,omegaz,tqx,tqy,tqz = read_particle_data(fname.replace("-contacts",""))
+                x1,y1,z1,x2,y2,z2,ID1,ID2,IDperiod,fcx,fcy,fcz,fnx,fny,fnz,ftx,fty,ftz,tx,ty,tz,cArea,delta,cx,cy,cz=read_contact_data(fname)
+                #Calculate screen length
+                DMEAN=r.max()+r.min()
+                print(INFO+f" Using Local DMEAN={DMEAN}")
+                screen = DMEAN*np.array(screen_factor)
+                #filter the particles using a mask
+                counts,z_avg = count_particle_contacts(ID,ID1,ID2)
+                limits = get_box_boundaries(x,y,z,r, screen)
+                mask_pos=get_mask(x,y,z,r,limits)#use the box limits as screen to select particles inside the box
+                mask_floating = counts < ncmin #floating particles
+                mask_active = counts >= ncmin #non-floating particles
+                mask_pos_contacts = get_mask(cx,cy,cz, np.zeros_like(cx), limits)#All contacts within the box
+                #Use intersection update to choose only the contacts where both particles are inside the box and are not floating
+                mask_pos_contacts &= np.isin(ID1, ID[mask_pos & mask_active]) & np.isin(ID2, ID[mask_pos & mask_active])
+                print(INFO+f" Total number of particles: {ID.size}")
+                print(INFO+f" Total number of contacts: {ID1.size}")
+                print(INFO+f" Number of particles filtered by position: {np.count_nonzero(mask_pos)}")
+                print(INFO+f" Number of floating particles: {np.count_nonzero(mask_floating)}")
+                print(INFO+f" Number of floating particles filtered by position: {np.count_nonzero(mask_pos & mask_pos)}")
+                print(INFO+f" Number of contacts filtered by position: {np.count_nonzero(mask_pos_contacts)}")
+                #Now filter by force magnitude, excluiding small forces and torques
+                FORCEFACTOR = 5.0e-2
+                if np.any(mask_pos_contacts):
+                    fnorm=np.sqrt(fnx**2+fny**2+fnz**2)
+                    mask_pos_contacts &= (fnorm >= fnorm.mean()*FORCEFACTOR)
+                    ct=np.sqrt(tx**2+ty**2+tz**2)
+                    mask_pos_contacts &= (ct >= ct.mean()*FORCEFACTOR)
+                #All particles should be good for statistical analysis. So compute and write in the files
+                opfile.write("{} {}\n".format(step, packing_fraction(x,y,z,r,limits,mask_pos,screen)))
+                ozfile.write("{} {}\n".format(step, mean_coordination_number(mask_pos,mask_pos_contacts)))
+                ocufile.write("{} {} {} \n".format(step, *cundall(fx,fy,fz,fcx,fcy,fcz,mask_pos,mask_pos_contacts)))
+
+            except Exception as e:
+                print(e)
+                pass
+
 
 #Now call the code
 #To make sure all our codes work, they should be in ./post/[filename] and ./post, to ensure we read from the folders in this direction we append ./
@@ -415,9 +482,9 @@ def series(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vo
 #fname = sys.argv[1].replace(".py","")#that is filename = postproc
 #config = importlib.import_module(fname)#import all the functions to this code
 #call postproc
-series(screen_factor=np.zeros(3),stride=10,only_last=False, ncmin=2, reuse_vorofile=False)
+series(screen_factor=np.zeros(3),stride=2,only_last=False, ncmin=2, reuse_vorofile=False)
 
-                
+#series_eq(screen_factor=3*np.ones(3),stride=2,only_last=False,ncmin=2,reuse_vorofile=False,folder=8)
                 
 
 
