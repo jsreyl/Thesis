@@ -266,7 +266,7 @@ def voronoi_volume(x,y,z,rad,step, reuse_vorofile=False):
     """
     auxlog=INFOPRINT("Computing Voronoi cell volumes using voro++ on command line")
     #To use voro++ we need a file formated as ID x y z rad
-    FNAME="post/voro_ixyzr_"+str(step)+".txt"
+    FNAME="post/voro_ixyz_"+str(step)+".txt"
     #We might use these files later on a cpp code for voro++ to generate .pov images and an animation
     vorofile_exists= os.path.isfile(FNAME+".vol")
     if vorofile_exists and reuse_vorofile:
@@ -320,14 +320,14 @@ def histogram_volume_per_cell(vorovol,step, mask_pos,autonbins=True,nbins=20,fna
     Nhist=np.nan_to_num(Nhist)
     np.savetxt(f"post/histo_vorocells_vol{fname}_{step}.txt",np.column_stack((Vhalf,Nhist)))
 
-def print_vorovol(vorovol,vertices,edges,faces,area,step,fname):
+def print_vorovol(ID,vorovol,vertices,edges,faces,area,step,fname):
     """
     This function prints a file with voronoi cell volume info to be used by plt's histogram
     INPUT: vorovol, vertices, edges, faces, area, step, fname -> arrays containing volume of each voroni cell,number of vertices,edges,faces and total area, timestep of the simulation and fname an additional name indicator for the file
     OUTPUT: post/vol_per_vorocell{fname}_{step}.txt : file containing the voronoi info arrays
     """
-    auxlog=INFOPRINT("Printing voronoi cell volume array to file")
-    np.savetxt(f"post/vol_per_vorocell{fname}_{step}.txt",np.column_stack((vorovol,vertices,edges,faces,area)))
+    auxlog=INFOPRINT("Printing voronoi cell volume array to file (.vol to keep consistency)")
+    np.savetxt(f"post/voro_ixyz{fname}_{step}.txt.vol",np.column_stack((ID,vorovol,vertices,edges,faces,area)))
 
 
 #------------Series computation---------------
@@ -394,18 +394,19 @@ def series(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vo
 
                 #Calculate pressure histograms
                 pressure_filtered=pressure_per_particle(ID, ID1, ID2, fcx,fcy,fcz,mask_pos_contacts)
-                histogram_pressure_per_particle(pressure_filtered[pressure_filtered != 0.],step,fname="_filtered")
+                #histogram_pressure_per_particle(pressure_filtered[pressure_filtered != 0.],step,fname="_filtered")
                 print_pressure(pressure_filtered, counts,step,fname="_filtered")
                 pressure_total=pressure_per_particle(ID,ID1,ID2,fcx,fcy,fcz,np.ones(ID1.size,dtype=bool))
-                histogram_pressure_per_particle(pressure_total,step,fname="_total")
+                #histogram_pressure_per_particle(pressure_total,step,fname="_total")
                 print_pressure(pressure_total,counts,step,fname="_total")
 
                 #Calculate volume histograms
                 vorovol,vertices,edges,faces,area=voronoi_volume(x,y,z,r,step)
-                histogram_volume_per_cell(vorovol,step,mask_pos,fname="_filtered")
-                print_vorovol(vorovol[mask_pos],vertices[mask_pos],edges[mask_pos],faces[mask_pos],area[mask_pos],step,fname="_filtered")
-                histogram_volume_per_cell(vorovol,step,np.ones(ID.size, dtype=bool),fname="_total")
-                print_vorovol(vorovol,vertices,edges,faces,area,step,fname="_total")
+                #histogram_volume_per_cell(vorovol,step,mask_pos,fname="_filtered")
+                #no need to print vorovol for full faces since we can read the .vol files.
+                print_vorovol(ID[mask_pos],vorovol[mask_pos],vertices[mask_pos],edges[mask_pos],faces[mask_pos],area[mask_pos],step,fname="_filtered")
+                #histogram_volume_per_cell(vorovol,step,np.ones(ID.size, dtype=bool),fname="_total")
+                #print_vorovol(vorovol,vertices,edges,faces,area,step,fname="_total")
                 
             except Exception as e:
                 print(e)
