@@ -32,7 +32,7 @@ def read_limit_info(fname):
     coord_min, coord_max =np.loadtxt(fname,skiprows=5,max_rows=3, unpack=True)
     return coord_min, coord_max
 
-def read_particle_data(fname):
+def read_particle_data(fname, use_periodic=False):
     """
     This function reads a dump file and returns physical info on all particles of the packing
     INPUT: fname -> filename of the dumped file by LIGGGHTS, these are named packing_gz/packing_[timestep].gz
@@ -41,7 +41,15 @@ def read_particle_data(fname):
     auxlog=INFOPRINT("reading particle data")
     print("...Reading particle dump file: "+fname+"...")
     #from 10 onwards are the data
-    ID,TYPE,mass,x,y,z,vx,vy,vz,fx,fy,fz,r,omegax,omegay,omegaz,tqx,tqy,tqz = np.loadtxt(fname, skiprows=9, unpack=True)
+    if use_periodic:
+        #ix,iy,iz are the ids of the box in which the particle is.
+        #xu,yu,zu are the unwrapped coordinates, that is the actual coordinates of the particle accounting it's movement across the periodic boxes
+        #it is basically
+        #xu=x+ix*box_x_length
+        ID,TYPE,mass,x,y,z,vx,vy,vz,fx,fy,fz,r,omegax,omegay,omegaz,tqx,tqy,tqz,ix,iy,iz,xu,yu,zu = np.loadtxt(fname, skiprows=9, unpack=True)
+    else:
+        ID,TYPE,mass,x,y,z,vx,vy,vz,fx,fy,fz,r,omegax,omegay,omegaz,tqx,tqy,tqz = np.loadtxt(fname, skiprows=9, unpack=True)
+
     print(f"Number of particles read: {ID.size}")
     ID = ID.astype(np.int32)
     TYPE = TYPE.astype(np.int32)
@@ -50,7 +58,10 @@ def read_particle_data(fname):
     #sorting IDs
     #use argsort, which returns the indexes that would sort the ID array and use these argsorted list to sort the other ones without mixing the physical data corresponding to each indexed particle
     IDarray = np.argsort(ID)
-    return ID[IDarray], TYPE[IDarray],mass[IDarray],x[IDarray],y[IDarray],z[IDarray],vx[IDarray],vy[IDarray],vz[IDarray],fx[IDarray],fy[IDarray],fz[IDarray],r[IDarray],omegax[IDarray],omegay[IDarray],omegaz[IDarray],tqx[IDarray],tqy[IDarray],tqz[IDarray]
+    if use_periodic:
+        return ID[IDarray], TYPE[IDarray],mass[IDarray],x[IDarray],y[IDarray],z[IDarray],vx[IDarray],vy[IDarray],vz[IDarray],fx[IDarray],fy[IDarray],fz[IDarray],r[IDarray],omegax[IDarray],omegay[IDarray],omegaz[IDarray],tqx[IDarray],tqy[IDarray],tqz[IDarray], ix[IDarray],iy[IDarray],iz[IDarray],xu[IDarray],yu[IDarray],zu[IDarray]
+    else:
+        return ID[IDarray], TYPE[IDarray],mass[IDarray],x[IDarray],y[IDarray],z[IDarray],vx[IDarray],vy[IDarray],vz[IDarray],fx[IDarray],fy[IDarray],fz[IDarray],r[IDarray],omegax[IDarray],omegay[IDarray],omegaz[IDarray],tqx[IDarray],tqy[IDarray],tqz[IDarray]
 
 
 def read_contact_data(fname):
@@ -138,6 +149,7 @@ def cundall(fx,fy,fz,cfx,cfy,cfz, mask_pos, mask_pos_contacts):
     INPUT: \vec{f},\vec{f_c},masks -> arrays with the total force on each particle and the contact force for each pair of particles, masks to define the region of interest for particles and contacts
     OUTPUT: the cundall parameter for the area of interest and all the packing
     """
+    auxlog=INFOPRINT("Calculating cundall parameter from particle forces")
     cundall_filtered=np.sum(np.sqrt(np.power(fx[mask_pos],2)+np.power(fy[mask_pos],2)+np.power(fz[mask_pos],2)))/np.sum(np.sqrt(np.power(cfx[mask_pos_contacts],2)+np.power(cfy[mask_pos_contacts],2)+np.power(cfz[mask_pos_contacts],2)))
     cundall_full=np.sum(np.sqrt(np.power(fx,2)+np.power(fy,2)+np.power(fz,2)))/np.sum(np.sqrt(np.power(cfx,2)+np.power(cfy,2)+np.power(cfz,2)))
     return cundall_filtered,cundall_full
@@ -175,6 +187,17 @@ def packing_fraction(x,y,z,r,limits,mask_pos,screen=np.zeros(3)):
     particleVolume=4.*np.pi*np.sum(np.power(r[mask_pos],3))/3.
     return particleVolume/totalVolume
 
+def packing_fraction_vorovol(x,y,z,r,mask_pos,vorovol):
+    """
+    This function calculates the packing fraction using the volume of voronoi cells
+    INPUT: *pos, r, mask_pos, vorovol -> position of the centers of the particles, radius of the particles, mask for the particles inside a determined volume, volume of the voronoi cells
+    OUTPUT: packing fraction
+    """
+    auxlog=INFOPRINT("Calculating packing fraction from voronoi volumes")
+    totalVolume=np.sum(vorovol[mask_pos])
+    particleVolume=4.*np.pi*np.sum(np.power(r[mask_pos],3))/3.
+    return particleVolume/totalVolume
+
 def get_mask(x,y,z,radius,limits):
     """
     This function computes a position mask 
@@ -188,6 +211,57 @@ def get_mask(x,y,z,radius,limits):
     mask=masks[0] & masks[1] & masks[2] & masks[3] & masks[4] & masks[5]
     return mask
 
+"""
+Isotropic compression:
+To ensure the compression was isotropic, calculate a deviatoric stress q and an isotropic pression p.
+For that we can calculate the components of the macroscopic stress tensor using the microscopic contact forces as
+sigma_alpha_beta=(1/V)*sum_c fc_alpha*l_beta
+where:
+  - V: the volume where the average is performed
+  - fc_alpha: the alpha component of the contact force
+  - l_beta: the beta component of the vector directed from the center of one particle to another
+  - the summation is performed over all contacts inside the volume
+
+Once we have the stress tensor we can calculate the deviatoric q and isotropic p pressures:
+p=(sigma_xx+sigma_yyy+sigma_zz)/3=(sigma_x+sigma_y+sigma_z)/3
+q=sqrt((sigmax-sigmay)^2+(sigmay-sigmaz)^2+(sigmax-sigmaz)^2/2)
+or, if the compression has a triaxial simmetry
+q=sigmax-sigmaz
+we can calculate both these factors. In the case that our compression is isotropic, q/p should be a small number ~10^-3
+"""
+def stress_tensor(x1,y1,z1,x2,y2,z2,fcx,fcy,fcz,limits, mask):
+    """
+    This function calculates the stress tensor and using it's components calculates isotropic and deviatoric presuures p and q, finally returns q/p which should be small for isotropic compressions
+    INPUT: x*,y*,z*, fc*, limits, mask -> position coordinates for two particles in contact, contact forces, box limits and a mask to filter contacts within the box
+    OUTPUT: q/p
+    """
+    auxlog=INFOPRINT("Calclating stress tensor along with q and p")
+    #Calculate volume
+    Volume=(limits[1]-limits[0])*(limits[3]-limits[2])*(limits[5]-limits[4])
+    #calculate stress tensor
+    sigma=np.zeros((3,3))
+    fc = np.array([fcx[mask],fcy[mask],fcz[mask]])
+    lc = np.array([x2[mask]-x1[mask],y2[mask]-y1[mask],z2[mask]-z1[mask]])
+    #iterate on the directions x,y,z
+    for ii in np.arange(3):
+        for jj in np.arange(3):
+            #iterate on every contact
+            for cc in np.arange(len(fcx[mask])):
+                sigma[ii][jj]+=fc[ii][cc]*lc[jj][cc]
+    sigma=sigma/Volume
+    print(f"Stress tensor:\n {sigma}")
+    #Now calculate the wigenvalues
+    w,v = np.linalg.eig(sigma)
+    print(f"Eigenvalues found: {w}")
+    p=(sigma[0][0]+sigma[1][1]+sigma[2][2])/3.
+    print(f"Isostatic p from sigma={p}")
+    p=(w[0]+w[1]+w[2])/3.
+    print(f"Isostatic p from eigenvalues={p}")
+    q=np.sqrt(((w[0]-w[1])**2+(w[1]-w[2])**2+(w[0]-w[2])**2)/2.)
+    print(f"Deviatoric q={q}")
+    q2=(w[0]-w[2])
+    print(f"Triaxial deviarotic q={q2}")
+    return np.abs(q/p)
 #---------------Histograms--------------------------------------------
 """
 We need two histograms
@@ -257,12 +331,12 @@ def print_pressure(press,full_counts,step,fname):
     np.savetxt(f"post/pressure_per_particle{fname}_{step}.txt",np.column_stack((press,full_counts)))
 
 
-def voronoi_volume(x,y,z,rad,step, reuse_vorofile=False):
+def voronoi_volume(x,y,z,rad,step, reuse_vorofile=False,print_povfile=False,use_periodic=False):
     """
     This function takes the particle postion info and uses voro++ to calculat the voronoi cell volumes as well as creating .pov files to visualize the distribution using povray
-    INPUT: x,y,z,rad,step,reuse_vorofile -> arrays containing the position of each partivle, timestep of the simulation and whether to reuse a pre existing voro file
+    INPUT: x,y,z,rad,step,reuse_vorofile,print_povfile -> arrays containing the position of each partivle, timestep of the simulation, whether to reuse a pre existing voro file and whether to print .pov files to animate using povray
     OUTPUT: vorovol,vertexes,edges,faces,area -> arrays containing voronoi volumes, number of vertices, edges, faces and total area of a voronoi cell indexed as the particles
-            voro_ixyzr.txt.vol, voro_ixyzr.txt_p.pov, voro_ixyzr.txt_v.pov: files for processing
+            voro_ixyz.txt.vol, voro_ixyz.txt_p.pov, voro_ixyz.txt_v.pov: files for processing
     """
     auxlog=INFOPRINT("Computing Voronoi cell volumes using voro++ on command line")
     #To use voro++ we need a file formated as ID x y z rad
@@ -282,20 +356,31 @@ def voronoi_volume(x,y,z,rad,step, reuse_vorofile=False):
         #we're using -v verbose and -o ordering so the output file uses the same ids as the particles
         #Use -c to print a custom output "%i %q %w %g %s %F %v"
         #this means ID Position_coodinates #_of_vertexes #_of_edges #_of_faces Superficial_area Voronoi_volume
-        #other useful args are -r for polydisperse distributions, -p for periodic boundaries and -y for printing .pov files for particles and voro cells
-        args = " -v -o -y -c \"%i %q %w %g %s %F %v\" "+str((x-rad).min())+" "+str((x+rad).max())+" "+str((y-rad).min())+" "+str((y+rad).max())+" "+str((z-rad).min())+" "+str((z+rad).max())+" "+FNAME
+        #other useful args are -r for polydisperse distributions, -p for periodic boundaries and -y for printing .pov files for particles and voro cells (these are quite heavy so only use them if you want to animate and have enough space to allocate them)
+
+        args = " -v -o -c \"%i %w %g %s %F %v\" "+str((x-rad).min())+" "+str((x+rad).max())+" "+str((y-rad).min())+" "+str((y+rad).max())+" "+str((z-rad).min())+" "+str((z+rad).max())+" "+FNAME
+        if print_povfile:
+            args=" -y"+args
+        if use_periodic:
+            args=" -p"+args
+        """
+        if print_povfile:
+            args = " -v -o -y -c \"%i %w %g %s %F %v\" "+str((x-rad).min())+" "+str((x+rad).max())+" "+str((y-rad).min())+" "+str((y+rad).max())+" "+str((z-rad).min())+" "+str((z+rad).max())+" "+FNAME
+        else:
+            args = " -v -o -c \"%i %w %g %s %F %v\" "+str((x-rad).min())+" "+str((x+rad).max())+" "+str((y-rad).min())+" "+str((y+rad).max())+" "+str((z-rad).min())+" "+str((z+rad).max())+" "+FNAME
+        """
         print("# Calling voro++ (this might take a few minutes ...) ")
         print(f"# args for voro++: {args}")
         os.system("voro++ "+args)
     #Now that we have our .vol file load it
     IFNAME=FNAME+".vol"
     print(f"# Loading and filtering voro data from {IFNAME} ...")
-    ii,xvoro,yvoro,zvoro,vertexes,edges,faces,area,vorovol=np.loadtxt(IFNAME, unpack=True)
+    ii,vertexes,edges,faces,area,vorovol=np.loadtxt(IFNAME, unpack=True)
     print("# Checking voro data ...")
-    if xvoro.size != x.size:
+    if ii.size != x.size:
         print(ERROR + "total data read is different from original data")
         print(ERROR + f"x.size:     {x.size}")
-        print(ERROR + f"xvoro.size: {xvoro.size}")
+        print(ERROR + f"iivoro.size: {ii.size}")
         sys.exit(1)
     else:
         print("All seems right!")
@@ -327,22 +412,30 @@ def print_vorovol(ID,vorovol,vertices,edges,faces,area,step,fname):
     OUTPUT: post/vol_per_vorocell{fname}_{step}.txt : file containing the voronoi info arrays
     """
     auxlog=INFOPRINT("Printing voronoi cell volume array to file (.vol to keep consistency)")
-    np.savetxt(f"post/voro_ixyz{fname}_{step}.txt.vol",np.column_stack((ID,vorovol,vertices,edges,faces,area)))
+    np.savetxt(f"post/voro_ixyz{fname}_{step}.txt.vol",np.column_stack((ID,vertices,edges,faces,area,vorovol)))
+
+def print_rad(rad, step, fname):
+    auxlog=INFOPRINT(f"Storing particle radius on file")
+    np.savetxt(f"post/rad{fname}_{step}.txt",np.column_stack((rad)))
 
 
-#------------Series computation---------------
-def series(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vorofile=False):
-    print(f'# Innitiating postprocessing to read every {stride} files.')
+##############################################
+############### SERIAL COMPUTATION ###########
+##############################################
+
+def series(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vorofile=False,use_periodic=False,addname=""):
+    print(f'# Innitiating serial postprocessing to read every {stride} files.')
     if only_last==True:
         print('# Using only last file')
-    #files to write information in: packing fraction, coordination number, cundall constant.
+    #files to write information in: packing fraction, coordination number, cundall constant, isotropic constant q/p.
     #No need for files respecting histograms as those are written in the respective histogram functions
     #contacts_pattern are exit files from LIGGGHTS
     contacts_pattern="out/dump-contacts_*.gz"
-    packfile="post/packing_fraction.txt"
-    zfile="post/z.txt"
-    cundallfile="post/cundall.txt"
-    with open(packfile,'w') as opfile, open(zfile,'w') as ozfile, open(cundallfile,'w') as ocufile:
+    packfile=f"post/packing_fraction{addname}.txt"
+    zfile=f"post/z{addname}.txt"
+    cundallfile=f"post/cundall{addname}.txt"
+    isofile=f"post/qp{addname}.txt"
+    with open(packfile,'w') as opfile, open(zfile,'w') as ozfile, open(cundallfile,'w') as ocufile, open(isofile,'w') as oqpfile:
         fnames=glob.glob(contacts_pattern)#A list with the names of all dump_contacts files
         #sort the list using the time step number, that is dump-contacts_350.gz should go before dump-contacts_500.gz
         #in order to do this split the name using the _ choosing the last part (350.gz) and then the . choosing the first part (350)
@@ -359,7 +452,10 @@ def series(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vo
             #Use try excerpt to get errors
             try:
                 #read particle data, from our naming convention out/dump_*.gz contains particle information while out/dump-contacts_*.gz contains per pair contact info
-                ID,TYPE,mass,x,y,z,vx,vy,vz,fx,fy,fz,r,omegax,omegay,omegaz,tqx,tqy,tqz = read_particle_data(fname.replace("-contacts",""))
+                if use_periodic:
+                    ID,TYPE,mass,x,y,z,vx,vy,vz,fx,fy,fz,r,omegax,omegay,omegaz,tqx,tqy,tqz,ix,iy,iz,xu,yu,zu = read_particle_data(fname.replace("-contacts",""),use_periodic)
+                else:
+                    ID,TYPE,mass,x,y,z,vx,vy,vz,fx,fy,fz,r,omegax,omegay,omegaz,tqx,tqy,tqz = read_particle_data(fname.replace("-contacts",""),use_periodic)
                 x1,y1,z1,x2,y2,z2,ID1,ID2,IDperiod,fcx,fcy,fcz,fnx,fny,fnz,ftx,fty,ftz,tx,ty,tz,cArea,delta,cx,cy,cz=read_contact_data(fname)
                 #Calculate screen length
                 DMEAN=r.max()+r.min()
@@ -378,51 +474,55 @@ def series(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vo
                 print(INFO+f" Total number of contacts: {ID1.size}")
                 print(INFO+f" Number of particles filtered by position: {np.count_nonzero(mask_pos)}")
                 print(INFO+f" Number of floating particles: {np.count_nonzero(mask_floating)}")
-                print(INFO+f" Number of floating particles filtered by position: {np.count_nonzero(mask_pos & mask_pos)}")
+                print(INFO+f" Number of floating particles filtered by position: {np.count_nonzero(mask_floating & mask_pos)}")
                 print(INFO+f" Number of contacts filtered by position: {np.count_nonzero(mask_pos_contacts)}")
                 #Now filter by force magnitude, excluiding small forces and torques
                 FORCEFACTOR = 5.0e-2
                 if np.any(mask_pos_contacts):
                     fnorm=np.sqrt(fnx**2+fny**2+fnz**2)
-                    mask_pos_contacts &= (fnorm >= fnorm.mean()*FORCEFACTOR)
+                    mask_pos_contacts &= (fnorm >= fnorm[mask_pos_contacts].mean()*FORCEFACTOR)
                     ct=np.sqrt(tx**2+ty**2+tz**2)
-                    mask_pos_contacts &= (ct >= ct.mean()*FORCEFACTOR)
+                    mask_pos_contacts &= (ct >= ct[mask_pos_contacts].mean()*FORCEFACTOR)
                 #All particles should be good for statistical analysis. So compute and write in the files
-                opfile.write("{} {}\n".format(step, packing_fraction(x,y,z,r,limits,mask_pos,screen)))
-                ozfile.write("{} {}\n".format(step, mean_coordination_number(mask_pos,mask_pos_contacts)))
-                ocufile.write("{} {} {} \n".format(step, *cundall(fx,fy,fz,fcx,fcy,fcz,mask_pos,mask_pos_contacts)))
-
-                #Calculate pressure histograms
+                 #Calculate pressure histograms
                 pressure_filtered=pressure_per_particle(ID, ID1, ID2, fcx,fcy,fcz,mask_pos_contacts)
                 #histogram_pressure_per_particle(pressure_filtered[pressure_filtered != 0.],step,fname="_filtered")
-                print_pressure(pressure_filtered, counts,step,fname="_filtered")
-                pressure_total=pressure_per_particle(ID,ID1,ID2,fcx,fcy,fcz,np.ones(ID1.size,dtype=bool))
+                print_pressure(pressure_filtered, counts,step,fname="_filtered"+str(addname))
+                #pressure_total=pressure_per_particle(ID,ID1,ID2,fcx,fcy,fcz,np.ones(ID1.size,dtype=bool))
                 #histogram_pressure_per_particle(pressure_total,step,fname="_total")
-                print_pressure(pressure_total,counts,step,fname="_total")
+                #print_pressure(pressure_total,counts,step,fname="_total"+str(addname))
 
                 #Calculate volume histograms
-                vorovol,vertices,edges,faces,area=voronoi_volume(x,y,z,r,step)
+                vorovol,vertices,edges,faces,area=voronoi_volume(x,y,z,r,step,reuse_vorofile=reuse_vorofile,use_periodic=use_periodic)
                 #histogram_volume_per_cell(vorovol,step,mask_pos,fname="_filtered")
                 #no need to print vorovol for full faces since we can read the .vol files.
-                print_vorovol(ID[mask_pos],vorovol[mask_pos],vertices[mask_pos],edges[mask_pos],faces[mask_pos],area[mask_pos],step,fname="_filtered")
+                print_vorovol(ID[mask_pos],vorovol[mask_pos],vertices[mask_pos],edges[mask_pos],faces[mask_pos],area[mask_pos],step,fname="_filtered"+str(addname))
                 #histogram_volume_per_cell(vorovol,step,np.ones(ID.size, dtype=bool),fname="_total")
                 #print_vorovol(vorovol,vertices,edges,faces,area,step,fname="_total")
-                
+                print_rad(r,step,"")
+
+                #files for equilibrium parameters
+                opfile.write("{} {} {}\n".format(step, packing_fraction(x,y,z,r,limits,mask_pos,screen), packing_fraction_vorovol(x,y,z,r,mask_pos,vorovol)))
+                ozfile.write("{} {}\n".format(step, mean_coordination_number(mask_pos,mask_pos_contacts)))
+                ocufile.write("{} {} {} \n".format(step, *cundall(fx,fy,fz,fcx,fcy,fcz,mask_pos,mask_pos_contacts)))
+                oqpfile.write("{} {}\n".format(step,stress_tensor(x1,y1,z1,x2,y2,z2,fcx,fcy,fcz,limits,mask_pos_contacts)))
+
             except Exception as e:
                 print(e)
                 pass
             
-def series_eq(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vorofile=False,folder=1):
+def series_eq(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vorofile=False,folder="",use_periodic=False):
     print(f'# Innitiating equilibrium postprocessing to read every {stride} files.')
     if only_last==True:
         print('# Using only last file')
     #files to write information in: packing fraction, coordination number, cundall constant.
     #contacts_pattern are dump files from LIGGGHTS
-    contacts_pattern="out_"+str(folder)+"/dump-contacts_*.gz"
-    packfile="post/packing_fraction_"+str(folder)+".txt"
-    zfile="post/z_"+str(folder)+".txt"
-    cundallfile="post/cundall_"+str(folder)+".txt"
-    with open(packfile,'w') as opfile, open(zfile,'w') as ozfile, open(cundallfile,'w') as ocufile:
+    contacts_pattern=f"out{folder}/dump-contacts_*.gz"
+    packfile=f"post/packing_fraction{folder}.txt"
+    zfile=f"post/z{folder}.txt"
+    cundallfile=f"post/cundall{folder}.txt"
+    isofile=f"post/qp{folder}.txt"
+    with open(packfile,'w') as opfile, open(zfile,'w') as ozfile, open(cundallfile,'w') as ocufile, open(isofile,'w') as oqpfile:
         fnames=glob.glob(contacts_pattern)#A list with the names of all dump_contacts files
         #sort the list using the time step number, that is dump-contacts_350.gz should go before dump-contacts_500.gz
         #in order to do this split the name using the _ choosing the last part (350.gz) and then the . choosing the first part (350)
@@ -439,7 +539,10 @@ def series_eq(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse
             #Use try excerpt to get errors
             try:
                 #read particle data, from our naming convention out/dump_*.gz contains particle information while out/dump-contacts_*.gz contains per pair contact info
-                ID,TYPE,mass,x,y,z,vx,vy,vz,fx,fy,fz,r,omegax,omegay,omegaz,tqx,tqy,tqz = read_particle_data(fname.replace("-contacts",""))
+                if use_periodic:
+                    ID,TYPE,mass,x,y,z,vx,vy,vz,fx,fy,fz,r,omegax,omegay,omegaz,tqx,tqy,tqz,ix,iy,iz,xu,yu,zu = read_particle_data(fname.replace("-contacts",""),use_periodic)
+                else:
+                    ID,TYPE,mass,x,y,z,vx,vy,vz,fx,fy,fz,r,omegax,omegay,omegaz,tqx,tqy,tqz = read_particle_data(fname.replace("-contacts",""),use_periodic)
                 x1,y1,z1,x2,y2,z2,ID1,ID2,IDperiod,fcx,fcy,fcz,fnx,fny,fnz,ftx,fty,ftz,tx,ty,tz,cArea,delta,cx,cy,cz=read_contact_data(fname)
                 #Calculate screen length
                 DMEAN=r.max()+r.min()
@@ -471,7 +574,92 @@ def series_eq(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse
                 opfile.write("{} {}\n".format(step, packing_fraction(x,y,z,r,limits,mask_pos,screen)))
                 ozfile.write("{} {}\n".format(step, mean_coordination_number(mask_pos,mask_pos_contacts)))
                 ocufile.write("{} {} {} \n".format(step, *cundall(fx,fy,fz,fcx,fcy,fcz,mask_pos,mask_pos_contacts)))
+                oqpfile.write("{} {}\n".format(step, stress_tensor(x1,y1,z1,x2,y2,z2,fcx,fcy,fcz,limits,mask_pos_contacts)))
 
+            except Exception as e:
+                print(e)
+                pass
+
+def series_distance(ndiam,screen_factor=np.ones(3),stride=1,only_last=True, ncmin=2, reuse_vorofile=False,folder="",use_periodic=False):
+    print(f'# Innitiating distance filtering postprocessing to read every {stride} files.')
+    if only_last==True:
+        print('# Using only last file')
+    #files to write information in: packing fraction, coordination number, cundall constant.
+    #contacts_pattern are dump files from LIGGGHTS
+    contacts_pattern="out"+str(folder)+"/dump-contacts_*.gz"
+    packfile="post/packing_fraction"+str(folder)+"_distance.txt"
+    zfile="post/z"+str(folder)+"_distance.txt"
+    cundallfile="post/cundall"+str(folder)+"_distance.txt"
+    isofile=f"post/qp{folder}_distance.txt"
+    with open(packfile,'w') as opfile, open(zfile,'w') as ozfile, open(cundallfile,'w') as ocufile, open(isofile,'w') as oqpfile:
+        fnames=glob.glob(contacts_pattern)#A list with the names of all dump_contacts files
+        #sort the list using the time step number, that is dump-contacts_350.gz should go before dump-contacts_500.gz
+        #in order to do this split the name using the _ choosing the last part (350.gz) and then the . choosing the first part (350)
+        fnames.sort(key=lambda x: int(x.split('_')[-1].split('.')[0]))
+        ii=0
+        for fname, ii in zip(fnames,range(len(fnames))):
+            if ii%stride != 0 and fname != fnames[-1] and fname != fnames[0]:
+                continue
+            if only_last and fname != fnames[-1]:
+                continue
+            step=int(fname.split('_')[-1].split('.')[0])
+            print(77*"#")
+            print(INFO+f" Processing step: {step}\n")
+            #Use try excerpt to get errors
+            try:
+                #read particle data, from our naming convention out/dump_*.gz contains particle information while out/dump-contacts_*.gz contains per pair contact info
+                if use_periodic:
+                    ID,TYPE,mass,x,y,z,vx,vy,vz,fx,fy,fz,r,omegax,omegay,omegaz,tqx,tqy,tqz,ix,iy,iz,xu,yu,zu = read_particle_data(fname.replace("-contacts",""),use_periodic)
+                else:
+                    ID,TYPE,mass,x,y,z,vx,vy,vz,fx,fy,fz,r,omegax,omegay,omegaz,tqx,tqy,tqz = read_particle_data(fname.replace("-contacts",""),use_periodic)
+                x1,y1,z1,x2,y2,z2,ID1,ID2,IDperiod,fcx,fcy,fcz,fnx,fny,fnz,ftx,fty,ftz,tx,ty,tz,cArea,delta,cx,cy,cz=read_contact_data(fname)
+                #Calculate screen length
+                DMEAN=r.max()+r.min()
+                print(INFO+f" Using Local DMEAN={DMEAN}")
+                #Secuentially change screen to write on the same file
+                for i in np.arange(ndiam):
+                    print(INFO+f"Filtering particles with centers {i} diameters from walls...")
+                    screen = DMEAN*np.array(i*screen_factor)
+                    #filter the particles using a mask
+                    counts,z_avg = count_particle_contacts(ID,ID1,ID2)
+                    limits = get_box_boundaries(x,y,z,r, screen)
+                    mask_pos=get_mask(x,y,z,r,limits)#use the box limits as screen to select particles inside the box
+                    mask_floating = counts < ncmin #floating particles
+                    mask_active = counts >= ncmin #non-floating particles
+                    mask_pos_contacts = get_mask(cx,cy,cz, np.zeros_like(cx), limits)#All contacts within the box
+                    #Use intersection update to choose only the contacts where both particles are inside the box and are not floating
+                    mask_pos_contacts &= np.isin(ID1, ID[mask_pos & mask_active]) & np.isin(ID2, ID[mask_pos & mask_active])
+                    print(INFO+f" Total number of particles: {ID.size}")
+                    print(INFO+f" Total number of contacts: {ID1.size}")
+                    print(INFO+f" Number of particles filtered by position: {np.count_nonzero(mask_pos)}")
+                    print(INFO+f" Number of floating particles: {np.count_nonzero(mask_floating)}")
+                    print(INFO+f" Number of floating particles filtered by position: {np.count_nonzero(mask_floating & mask_pos)}")
+                    print(INFO+f" Number of contacts filtered by position: {np.count_nonzero(mask_pos_contacts)}")
+                    #Now filter by force magnitude, excluiding small forces and torques
+                    FORCEFACTOR = 5.0e-2
+                    if np.any(mask_pos_contacts):
+                        fnorm=np.sqrt(fnx**2+fny**2+fnz**2)
+                        mask_pos_contacts &= (fnorm >= fnorm.mean()*FORCEFACTOR)
+                        ct=np.sqrt(tx**2+ty**2+tz**2)
+                        mask_pos_contacts &= (ct >= ct.mean()*FORCEFACTOR)
+                        #All particles should be good for statistical analysis. So compute and write in the files
+                        #Calculate histograms
+                        addname=str(i)+"d"
+                        #pressure
+                        pressure_filtered=pressure_per_particle(ID, ID1, ID2, fcx,fcy,fcz,mask_pos_contacts)
+                        print_pressure(pressure_filtered, counts,step,fname="_filtered"+str(addname))
+                        #volume
+                        vorovol,vertices,edges,faces,area=voronoi_volume(x,y,z,r,step,reuse_vorofile=reuse_vorofile,use_periodic=use_periodic)
+                        print_vorovol(ID[mask_pos],vorovol[mask_pos],vertices[mask_pos],edges[mask_pos],faces[mask_pos],area[mask_pos],step,fname="_filtered"+str(addname))
+                        #only write radius file for all particles
+                        if i==0:
+                            print_rad(r,step,"")
+                        
+                        opfile.write("{} {} {} {}\n".format(i, np.count_nonzero(mask_pos), packing_fraction(x,y,z,r,limits,mask_pos,screen), packing_fraction_vorovol(x,y,z,r,mask_pos,vorovol)))
+                        ozfile.write("{} {}\n".format(i, mean_coordination_number(mask_pos,mask_pos_contacts)))
+                        ocufile.write("{} {} {} \n".format(i, *cundall(fx,fy,fz,fcx,fcy,fcz,mask_pos,mask_pos_contacts)))
+                        oqpfile.write("{} {}\n".format(i, stress_tensor(x1,y1,z1,x2,y2,z2,fcx,fcy,fcz,limits,mask_pos_contacts)))
+ 
             except Exception as e:
                 print(e)
                 pass
@@ -479,13 +667,10 @@ def series_eq(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse
 
 #Now call the code
 #To make sure all our codes work, they should be in ./post/[filename] and ./post, to ensure we read from the folders in this direction we append ./
-#sys.path.append("./")
-#fname = sys.argv[1].replace(".py","")#that is filename = postproc
-#config = importlib.import_module(fname)#import all the functions to this code
 #call postproc
-series(screen_factor=np.zeros(3),stride=2,only_last=False, ncmin=2, reuse_vorofile=False)
+series(screen_factor=3*np.ones(3),stride=1,only_last=True, ncmin=2, reuse_vorofile=False,use_periodic=False)
+series_eq(screen_factor=3*np.ones(3),stride=1,only_last=False,ncmin=2,reuse_vorofile=False,folder="",use_periodic=False)
 
-#series_eq(screen_factor=3*np.ones(3),stride=2,only_last=False,ncmin=2,reuse_vorofile=False,folder=8)
-                
-
-
+#Write all the files while sequentially changing the distance mask
+ndiam=20
+series_distance(ndiam)

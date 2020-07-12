@@ -1,0 +1,79 @@
+#run with 'mpirun -np 4 '/home/gorzy/Documents/LIGGGHTS/LIGGGHTS-PUBLIC/src/lmp_auto' -i in.packing_rescaled' to use four cores and the lmp_auto in the LIGGGHTS library
+#Particle packing by insertion and successive growing of particles
+
+atom_style	granular
+atom_modify	map array
+boundary	m m m
+newton		off
+#echo		both
+
+communicate	single vel yes
+
+units		si
+
+region		reg block -0.15 0.15 -0.15 0.15 -0.15 0.15 units box
+#create_box	1 reg
+#to read from a restart file, comment create_box and uncomment read_restart
+read_restart restart_*
+
+neighbor	0.002 bin
+neigh_modify	delay 0
+
+
+#Material properties required for new pair styles
+
+fix 		m1 all property/global youngsModulus peratomtype 5.e6
+fix 		m2 all property/global poissonsRatio peratomtype 0.45
+fix 		m3 all property/global coefficientRestitution peratomtypepair 1 0.3
+fix 		m4 all property/global coefficientFriction peratomtypepair 1 0.5
+
+#New pair style
+pair_style gran model hertz tangential history #Hertzian without cohesion
+pair_coeff	* *
+
+timestep	0.00001
+
+variable	presstimes equal 670000
+
+#output settings, include total thermal energy
+compute		1 all erotate/sphere
+#c_1 is the rotational energy of all spheres as defined in the compute with ID 1
+#compute the Cundal's Parameter to assure the system is in mechanic equilibrium
+#C=sum_p |F_T|/sum_p |F_c| that is total force, which should be close to zero over contact forces
+#compute	 	Ft all property/atom fx fy fz
+compute		Fc all pair/gran/local pos id force force_normal force_tangential torque contactArea delta contactPoint
+#variable	fc all sqrt(c_Fc[1]^2+c_Fc[2]^2+c_Fc[3]^2)
+#variable	fT all sqrt(c_Ft[1]^2+c_Ft[2]^2+c_Ft[3]^2)
+#compute		sumFt all reduce sum v_fT
+#compute		sumF_c all reduce sum v_fc
+#variable	Cundal_Param equal c_sumF_T/c_sumF_c
+
+#And to ensure volume equilibrium we want the packing fraction to be constant
+compute 	rad all property/atom update_on_run_end yes radius
+compute		meanRad all reduce update_on_run_end yes ave c_rad
+#variable	alpha equal ${grain_vol_ctn}*c_meanRad^3
+
+thermo_style	custom step atoms ke c_1 vol
+thermo		1000
+thermo_modify	lost ignore norm no
+
+#dump		dmp all custom/vtk 5000 out_vtk/packing_*.vtk id type x y z ix iy iz vx vy vz fx fy fz omegax omegay omegaz radius
+
+dump		dmp1 all custom 10000 out/dump_*.gz id type mass x y z vx vy vz fx fy fz radius omegax omegay omegaz tqx tqy tqz
+dump		dmp2 all local 10000 out/dump-contacts_*.gz c_Fc[1] c_Fc[2] c_Fc[3] c_Fc[4] c_Fc[5] c_Fc[6] c_Fc[7] c_Fc[8] c_Fc[9] c_Fc[10] c_Fc[11] c_Fc[12] c_Fc[13] c_Fc[14] c_Fc[15] c_Fc[16] c_Fc[17] c_Fc[18] c_Fc[19] c_Fc[20] c_Fc[21] c_Fc[22] c_Fc[23] c_Fc[24] c_Fc[25] c_Fc[26]
+#restart 50000 restart_1 restart_2
+restart 50000 restart_*
+
+fix xwalls1 all mesh/surface/stress/servo file meshes/xpmesh.stl type 1 
+fix xwalls2 all mesh/surface/stress/servo file meshes/xpmesh.stl type 1 
+
+fix ywalls1 all mesh/surface/stress/servo file meshes/xpmesh.stl type 1 
+fix ywalls2 all mesh/surface/stress/servo file meshes/xpmesh.stl type 1 
+
+fix zwalls1 all mesh/surface/stress/servo file meshes/xpmesh.stl type 1 
+fix zwalls2 all mesh/surface/stress/servo file meshes/xpmesh.stl type 1 
+
+fix movbox all wall/gran model hertz tangential history mesh n_meshes 6 meshes xwalls1 xwalls2 ywalls1 ywalls2 zwalls1 zwalls2
+
+
+run	  ${presstimes} upto

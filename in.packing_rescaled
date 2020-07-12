@@ -1,4 +1,4 @@
-#run with 'mpirun -np 4 '/home/gorzy/Documents/LIGGGHTS/LIGGGHTS-PUBLIC/src/lmp_auto' -i in.packing_dilute' to use four cores and the lmp_auto in the LIGGGHTS library
+#run with 'mpirun -np 4 '/home/gorzy/Documents/LIGGGHTS/LIGGGHTS-PUBLIC/src/lmp_auto' -i in.packing_rescaled' to use four cores and the lmp_auto in the LIGGGHTS library
 #Particle packing by insertion and successive growing of particles
 
 atom_style	granular
@@ -54,8 +54,8 @@ fix		pdd all particledistribution/discrete 32452843 1 pts 1.0
 variable	alphatarget equal 0.3
 variable	growts equal 50000
 variable	growevery equal 40
-variable	relaxts equal 20000
-variable	presstimes equal 600000
+variable	relaxts equal 70000
+variable	presstimes equal 670000
 
 #region and insertion
 group		nve_group region reg
@@ -91,11 +91,13 @@ thermo		1000
 thermo_modify	lost ignore norm no
 
 #insert the first particles
-run		1
+run		1 upto
 #dump		dmp all custom/vtk 5000 out_vtk_1/packing_*.vtk id type x y z ix iy iz vx vy vz fx fy fz omegax omegay omegaz radius
 
-dump		dmp1 all custom 5000 out_8/dump_*.gz id type mass x y z vx vy vz fx fy fz radius omegax omegay omegaz tqx tqy tqz
-dump		dmp2 all local 5000 out_8/dump-contacts_*.gz c_Fc[1] c_Fc[2] c_Fc[3] c_Fc[4] c_Fc[5] c_Fc[6] c_Fc[7] c_Fc[8] c_Fc[9] c_Fc[10] c_Fc[11] c_Fc[12] c_Fc[13] c_Fc[14] c_Fc[15] c_Fc[16] c_Fc[17] c_Fc[18] c_Fc[19] c_Fc[20] c_Fc[21] c_Fc[22] c_Fc[23] c_Fc[24] c_Fc[25] c_Fc[26]
+dump		dmp1 all custom 10000 out/dump_*.gz id type mass x y z vx vy vz fx fy fz radius omegax omegay omegaz tqx tqy tqz
+dump		dmp2 all local 10000 out/dump-contacts_*.gz c_Fc[1] c_Fc[2] c_Fc[3] c_Fc[4] c_Fc[5] c_Fc[6] c_Fc[7] c_Fc[8] c_Fc[9] c_Fc[10] c_Fc[11] c_Fc[12] c_Fc[13] c_Fc[14] c_Fc[15] c_Fc[16] c_Fc[17] c_Fc[18] c_Fc[19] c_Fc[20] c_Fc[21] c_Fc[22] c_Fc[23] c_Fc[24] c_Fc[25] c_Fc[26]
+restart 50000 restart_packing-1 restart_packing-2
+#restart 50000 restart_*
 unfix		ins
 
 #calculate grow rate
@@ -107,17 +109,17 @@ variable	dgrown atom ${Rgrowrate}*2.*c_rad
 fix		grow all adapt ${growevery} atom diameter v_dgrown
 
 #grow the particles
-run		${growts}
+run		${growts} upto
 
 #let the packing relax
 unfix	grow
-run		${relaxts}
+run		${relaxts} upto
 
 #compress the particles
 #variables for isostatic compression
 variable	ave_rad equal c_meanRad
 variable        inertial_number equal 5e-4
-variable        max_force equal 100.
+variable        max_force equal 5.
 print		"The average radius is ${ave_rad}"
 variable	max_vel equal (${inertial_number}/(sqrt(${alphatarget}*${p_density}/${max_force})*2.0*c_meanRad))
 #variable	max_vel equal 1.
@@ -143,4 +145,4 @@ fix movbox all wall/gran model hertz tangential history mesh n_meshes 6 meshes x
 
 #fix movbox all wall/gran model hertz tangential history mesh n_meshes 3 meshes xwalls1 ywalls1 zwalls1
 
-run	  ${presstimes}
+run	  ${presstimes} upto
