@@ -212,7 +212,7 @@ def filtered_params_plots(distance,particlenumber,ks,knames,fname):
     plt.savefig(fname)
     plt.close()
     plt.figure()
-    plt.plot(distance,particlenumber)
+    plt.plot(distance,particlenumber,'-o')
     plt.title("Particle number vs. Filtering distance")
     plt.xlabel("Separation distance/diameter")
     plt.ylabel("Particle number")

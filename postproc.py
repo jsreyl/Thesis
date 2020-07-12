@@ -205,9 +205,9 @@ def get_mask(x,y,z,radius,limits):
     OUTPUT: mask array
     """
     auxlog=INFOPRINT("Computing position masks ")
-    #compute mask for particles/contacts inside limits
-    masks=[x>=limits[0],x<=limits[1],y>limits[2],y<=limits[3],z>=limits[4],z<=limits[5]]
-    #the particle ID is only valid if all region constraints are
+    #compute mask for particles whose center is inside the limits
+    masks=[x>=limits[0],x<=limits[1],y>=limits[2],y<=limits[3],z>=limits[4],z<=limits[5]]
+    #the particle ID is only valid if all region constraints are true
     mask=masks[0] & masks[1] & masks[2] & masks[3] & masks[4] & masks[5]
     return mask
 
