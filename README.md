@@ -12,6 +12,11 @@ The order in which codes should be run to recreate the local folder is as follow
        For a simulation using wall compression; this uses mpi to run on 4 cores and requires the .stl files located on the /meshes/ folder.
        This will output dump files on /out, containing info regarding particles and contacts. If you need visualization edit the LIGGGHTS code uncommenting the dump on /out_vtk and use pareview to import the .vtk files. (WARNING: .vtk files may be large depending on the number of particles)
        
+       dump files are fomatted as follows:
+       - dump_{timestep}.gz
+       particleID particleType x y z vx vy vz fx fy fz radius omegax omegay omegaz tqx tqy tqz
+       - dump-contacts_{timestep}.gz
+       x1 y1 z1 x2 y2 z2 particleID1 particleID2 IDperiodic fcx fcy fcz fnx fny fnz ftx fty ftz tqx tqy tqz contactArea interpenetrationDistance cx cy cz
        <REQUIREMENTS>: An installation of LIGGGHTS that can dump .gz files and use mpi.
        
     2. Run the postprocessing for dump files (based on Wiliam Oquendos postprocessing code)
