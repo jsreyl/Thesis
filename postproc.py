@@ -3,6 +3,7 @@ import sys
 import numpy as np
 import glob
 import matplotlib.pyplot as plt
+from pyevtk.hl import pointsToVTK
 from colorama import Fore, Back, Style
 WARNING=Fore.YELLOW + '# WARNING: ' + Style.RESET_ALL
 INFO=Fore.GREEN + '# INFO: ' + Style.RESET_ALL
@@ -130,6 +131,9 @@ def mean_coordination_number(mask_pos,mask_pos_contacts):
     #if a particle and a contact are in our region of interest, that is indicated as a 1 on our masks, so simply count how many 1s are there
     NP=np.count_nonzero(mask_pos)
     NC=np.count_nonzero(mask_pos_contacts)
+    #Mean coordination number as defined by Tighe (2011):
+    #<z>=2Nc/N
+    #where Nc is the number of unique contacts and N the number of particles
     return 2*NC/NP
 
 #-----------Equilibrium parameters-------------------------------
@@ -168,8 +172,8 @@ def get_box_boundaries(x,y,z,r,screen=np.zeros(3)):
     """
     limits=np.zeros(6)
     limits[0]= min(x-r)+screen[0]; limits[1]=max(x+r)-screen[0];
-    limits[2]= min(y-r)+screen[1]; limits[3]=max(x+r)-screen[1];
-    limits[4]= min(x-r)+screen[2]; limits[5]=max(x+r)-screen[2];
+    limits[2]= min(y-r)+screen[1]; limits[3]=max(y+r)-screen[1];
+    limits[4]= min(z-r)+screen[2]; limits[5]=max(z+r)-screen[2];
     return limits
 
 def packing_fraction(x,y,z,r,limits,mask_pos,screen=np.zeros(3)):
@@ -180,7 +184,7 @@ def packing_fraction(x,y,z,r,limits,mask_pos,screen=np.zeros(3)):
     """
     auxlog=INFOPRINT("Calculating packing fraction from box limits")
     #first get the box boundaries and calculate the volume of the box
-    limits=get_box_boundaries(x,y,z,r,screen)
+    #limits=get_box_boundaries(x,y,z,r,screen)
     totalVolume=(limits[1]-limits[0])*(limits[3]-limits[2])*(limits[5]-limits[4])
     #now calculate the particle volume on the region of interest defined by the position mask (inside the box, or inside the screen region)
     #we assume al particles are spherical
@@ -245,12 +249,12 @@ def stress_tensor(x1,y1,z1,x2,y2,z2,fcx,fcy,fcz,limits, mask):
     #iterate on the directions x,y,z
     for ii in np.arange(3):
         for jj in np.arange(3):
-            #iterate on every contact
+            #sum for every contact
             for cc in np.arange(len(fcx[mask])):
                 sigma[ii][jj]+=fc[ii][cc]*lc[jj][cc]
     sigma=sigma/Volume
     print(f"Stress tensor:\n {sigma}")
-    #Now calculate the wigenvalues
+    #Now calculate the eigenvalues
     w,v = np.linalg.eig(sigma)
     print(f"Eigenvalues found: {w}")
     p=(sigma[0][0]+sigma[1][1]+sigma[2][2])/3.
@@ -262,31 +266,32 @@ def stress_tensor(x1,y1,z1,x2,y2,z2,fcx,fcy,fcz,limits, mask):
     q2=(w[0]-w[2])
     print(f"Triaxial deviarotic q={q2}")
     return np.abs(q/p)
+
 #---------------Histograms--------------------------------------------
 """
 We need two histograms
 1. Contact force per grain (or rather pressure per grain)
 2. Volume distributions of Voronoï cells (using voro++)
 """
-def pressure_per_particle(ID, ID1, ID2, cfx,cfy,cfz,mask_pos_contacts):
+def pressure_per_particle(ID, ID1, ID2, nfx,nfy,nfz,mask_pos_contacts):
     """
     This function calculates the pressure for each particle in the packing, defined as
     P = \sum_{i=1}^{z} |fn_i|
     where z is the contact number, fn the contact (normal) force between that particle and its contact
-    INPUT: IDs, cf-> IDs of all particles and particles in contact pairs, contact force arrays and a mask to select only particles in a position and force range
+    INPUT: IDs, nf-> IDs of all particles and particles in contact pairs, normal components of the contact force (arrays) and a mask to select only particles in a position and force range
     OUTPUT: P -> an array containing the pressure for each particle 
     """
     auxlog=INFOPRINT("Calculating pressure for each particle")
     #first calculate the pressure on particles with contacts
-    contact_ID = np.unique(np.concatenate((ID1[mask_pos_contacts],ID2[mask_pos_contacts])))
+    contact_ID = np.unique(np.concatenate((ID1[mask_pos_contacts],ID2[mask_pos_contacts])))#These are the IDs of particles with contacts
     #array for storing
 #    print(f"Contact IDs: {contact_ID}")
     pressure_contacts=np.zeros(contact_ID.size)
-    for i, IDval in enumerate(contact_ID):
-        IDmatch = np.where((IDval==ID1) | (IDval==ID2)) #each time this particle appears on the contact list
+    for i, IDval in enumerate(contact_ID):#For each particle with a contact
+        IDmatch = np.where((IDval==ID1) | (IDval==ID2)) #each time this particle appears on the contact list (i.e. for each contact)
 #        print(f"IDmatch: particle {IDval} has the contacts indexed by {IDmatch} connecting {ID1[IDmatch]},{ID2[IDmatch]}")
-        fn = np.sqrt(np.power(cfx[IDmatch],2)+np.power(cfy[IDmatch],2)+np.power(cfz[IDmatch],2))
-        pressure_contacts[i]=np.sum(fn)
+        fn = np.sqrt(np.power(nfx[IDmatch],2)+np.power(nfy[IDmatch],2)+np.power(nfz[IDmatch],2))#calculate the norm of it's contact force
+        pressure_contacts[i]=np.sum(fn)#And add them together
     #now we've got a relation contact_ID<->pressure_contacts
     
     #there may be however particles with no contacts, so let's set them to zero and store all data on a single array
@@ -301,6 +306,40 @@ def pressure_per_particle(ID, ID1, ID2, cfx,cfy,cfz,mask_pos_contacts):
             sys.exit(1)
         pressure_full[IDmatch]=pressure_contacts[i]
     return pressure_full
+
+def pressure_tighe(ID, ID1, ID2, cfx,cfy,cfz,x1,y1,z1,x2,y2,z2,mask_pos_contacts):
+    """
+    This function calculates the pressure for each particle in the packing, defined as
+    P_i = 0.5*\sum_{j=1}^{z} fc_ij\dot r_ij
+    where z is the contact number, fc the contact force between the i and j-th particles and rij is the vector oining the centers of the i-th and j-th particles
+    INPUT: IDs, cf,positions,mask-> IDs of all particles and particles in contact pairs, contact force arrays, positions of the particles and a mask to select only particles in a position and force range
+    OUTPUT: P -> an array containing the pressure for each particle 
+    """
+    auxlog=INFOPRINT("Calculating pressure for each particle")
+    #first calculate the pressure on particles with contacts
+    contact_ID = np.unique(np.concatenate((ID1[mask_pos_contacts],ID2[mask_pos_contacts])))#These are the IDs of particles with contacts
+    #array for storing
+#    print(f"Contact IDs: {contact_ID}")
+    pressure_contacts=np.zeros(contact_ID.size)
+    for i, IDval in enumerate(contact_ID):#For each particle with a contact
+        IDmatch = np.where((IDval==ID1) | (IDval==ID2)) #each time this particle appears on the contact list (i.e. for each contact)
+#        print(f"IDmatch: particle {IDval} has the contacts indexed by {IDmatch} connecting {ID1[IDmatch]},{ID2[IDmatch]}")
+        fn = cfx[IDmatch]*(x2[IDmatch]-x1[IDmatch])+cfy[IDmatch]*(y2[IDmatch]-y1[IDmatch])+cfz[IDmatch]*(z2[IDmatch]-z1[IDmatch])
+        pressure_contacts[i]=0.5*np.sum(fn)#And add them together
+    #now we've got a relation contact_ID<->pressure_contacts
+    
+    #there may be however particles with no contacts, so let's set them to zero and store all data on a single array
+    pressure_full=np.zeros(ID.size)
+    for i, IDval in enumerate(contact_ID):
+        IDmatch = np.where(IDval == ID)
+        if IDmatch[0].size != 1:#If there's more than one place or none there must be something wrong
+            print(ERROR+" Multiple indexes or none found.")
+            print("Contact index "+i)
+            print("Places found: "+np.count_nonzero(IDmatch))
+            print("Index match vector: "+IDmatch)
+            sys.exit(1)
+        pressure_full[IDmatch]=pressure_contacts[i]
+    return abs(pressure_full)
     
 def histogram_pressure_per_particle(press,step,autonbins=True,nbins=20,fname=""):
     """
@@ -418,12 +457,26 @@ def print_rad(rad, step, fname):
     auxlog=INFOPRINT(f"Storing particle radius on file")
     np.savetxt(f"post/rad{fname}_{step}.txt",np.column_stack((rad)))
 
-
+def points_to_vtk(x,y,z,r,pressure,vorovol,limits):
+    """
+    This function uses pyevtk to print the particle data into a .vtu file to visualize on Paraview
+    """
+    auxlog=INFOPRINT(f"Printing vtk file for particle visualization")
+    #Print only half the box so we can see the insides
+    masks=[x>=limits[0],x<=0.5*limits[1],y>=limits[2],y<=limits[3],z>=limits[4],z<=limits[5]]
+    mask=masks[0] & masks[1] & masks[2] & masks[3] & masks[4] & masks[5]
+    pointsToVTK("./post/particles",x[mask],y[mask],z[mask],data={"rad": r[mask],"pressure": pressure[mask],"vorovol": vorovol[mask]})
+    
 ##############################################
 ############### SERIAL COMPUTATION ###########
 ##############################################
 
 def series(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vorofile=False,use_periodic=False,addname=""):
+    """
+    This function serially prints files calling functions to calculate pressure, volume, equilibrium parameters and so on.
+    INPUT: a filtering screen factor to filter a determined distance in diameters from the walls, read a file every {stride} files, wheter to use only the file with the largest timestep, minimum contact number to consider, wheter to reuse files written by voro++ or write new every time, wheter the system is periodic, and an optional ending for the files (usefull if you don't wanna overwrite old files)
+    OUTPUT: files for packing fraction, mean contact number, cundal parameter, q/s, voronoi volume, pressure per particle.
+    """
     print(f'# Innitiating serial postprocessing to read every {stride} files.')
     if only_last==True:
         print('# Using only last file')
@@ -440,16 +493,15 @@ def series(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vo
         #sort the list using the time step number, that is dump-contacts_350.gz should go before dump-contacts_500.gz
         #in order to do this split the name using the _ choosing the last part (350.gz) and then the . choosing the first part (350)
         fnames.sort(key=lambda x: int(x.split('_')[-1].split('.')[0]))
-        ii=0
         for fname, ii in zip(fnames,range(len(fnames))):
-            if ii%stride != 0 and fname != fnames[-1] and fname != fnames[0]:
+            if ii%stride != 0 and fname != fnames[-1] and fname != fnames[0]: #include 1st and last file
                 continue
             if only_last and fname != fnames[-1]:
                 continue
             step=int(fname.split('_')[-1].split('.')[0])
             print(77*"#")
             print(INFO+f" Processing step: {step}\n")
-            #Use try excerpt to get errors
+            #Use try excerpt to get errors and print them but don't stop the postprocessing
             try:
                 #read particle data, from our naming convention out/dump_*.gz contains particle information while out/dump-contacts_*.gz contains per pair contact info
                 if use_periodic:
@@ -484,10 +536,12 @@ def series(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse_vo
                     ct=np.sqrt(tx**2+ty**2+tz**2)
                     mask_pos_contacts &= (ct >= ct[mask_pos_contacts].mean()*FORCEFACTOR)
                 #All particles should be good for statistical analysis. So compute and write in the files
-                 #Calculate pressure histograms
-                pressure_filtered=pressure_per_particle(ID, ID1, ID2, fcx,fcy,fcz,mask_pos_contacts)
+                #Calculate pressure histograms
+                pressure_filtered=pressure_per_particle(ID, ID1, ID2, fnx,fny,fnz,mask_pos_contacts)
+                pressure_ti=pressure_tighe(ID, ID1, ID2, fcx,fcy,fcz,x1,y1,z1,x2,y2,z2,mask_pos_contacts)
                 #histogram_pressure_per_particle(pressure_filtered[pressure_filtered != 0.],step,fname="_filtered")
-                print_pressure(pressure_filtered, counts,step,fname="_filtered"+str(addname))
+                print_pressure(pressure_filtered[mask_pos], counts[mask_pos],step,fname="_filtered"+str(addname))
+                print_pressure(pressure_ti[mask_pos],counts[mask_pos],step,fname="_filtered_tighe"+str(addname))
                 #pressure_total=pressure_per_particle(ID,ID1,ID2,fcx,fcy,fcz,np.ones(ID1.size,dtype=bool))
                 #histogram_pressure_per_particle(pressure_total,step,fname="_total")
                 #print_pressure(pressure_total,counts,step,fname="_total"+str(addname))
@@ -561,7 +615,7 @@ def series_eq(screen_factor=np.zeros(3),stride=1,only_last=False, ncmin=2, reuse
                 print(INFO+f" Total number of contacts: {ID1.size}")
                 print(INFO+f" Number of particles filtered by position: {np.count_nonzero(mask_pos)}")
                 print(INFO+f" Number of floating particles: {np.count_nonzero(mask_floating)}")
-                print(INFO+f" Number of floating particles filtered by position: {np.count_nonzero(mask_pos & mask_pos)}")
+                print(INFO+f" Number of floating particles filtered by position: {np.count_nonzero(mask_floating & mask_pos)}")
                 print(INFO+f" Number of contacts filtered by position: {np.count_nonzero(mask_pos_contacts)}")
                 #Now filter by force magnitude, excluiding small forces and torques
                 FORCEFACTOR = 5.0e-2
@@ -646,14 +700,18 @@ def series_distance(ndiam,screen_factor=np.ones(3),stride=1,only_last=True, ncmi
                         #Calculate histograms
                         addname=str(i)+"d"
                         #pressure
-                        pressure_filtered=pressure_per_particle(ID, ID1, ID2, fcx,fcy,fcz,mask_pos_contacts)
-                        print_pressure(pressure_filtered, counts,step,fname="_filtered"+str(addname))
+                        pressure_filtered=pressure_per_particle(ID, ID1, ID2, fnx,fny,fnz,mask_pos_contacts)
+                        pressure_ti=pressure_tighe(ID, ID1, ID2, fcx,fcy,fcz,x1,y1,z1,x2,y2,z2,mask_pos_contacts)
+                        #only save for particles inside the region of interest, that way we have a 1 on 1 relation with voronoi volumes
+                        print_pressure(pressure_filtered[mask_pos], counts[mask_pos],step,fname="_filtered"+str(addname))
+                        print_pressure(pressure_ti[mask_pos], counts[mask_pos],step,fname="_filtered_tighe"+str(addname))
                         #volume
                         vorovol,vertices,edges,faces,area=voronoi_volume(x,y,z,r,step,reuse_vorofile=reuse_vorofile,use_periodic=use_periodic)
                         print_vorovol(ID[mask_pos],vorovol[mask_pos],vertices[mask_pos],edges[mask_pos],faces[mask_pos],area[mask_pos],step,fname="_filtered"+str(addname))
                         #only write radius file for all particles
                         if i==0:
                             print_rad(r,step,"")
+                            points_to_vtk(x,y,z,r,pressure_filtered,vorovol,limits)
                         
                         opfile.write("{} {} {} {}\n".format(i, np.count_nonzero(mask_pos), packing_fraction(x,y,z,r,limits,mask_pos,screen), packing_fraction_vorovol(x,y,z,r,mask_pos,vorovol)))
                         ozfile.write("{} {}\n".format(i, mean_coordination_number(mask_pos,mask_pos_contacts)))
@@ -668,7 +726,7 @@ def series_distance(ndiam,screen_factor=np.ones(3),stride=1,only_last=True, ncmi
 #Now call the code
 #To make sure all our codes work, they should be in ./post/[filename] and ./post, to ensure we read from the folders in this direction we append ./
 #call postproc
-series(screen_factor=3*np.ones(3),stride=1,only_last=True, ncmin=2, reuse_vorofile=False,use_periodic=False)
+#series(screen_factor=3*np.ones(3),stride=1,only_last=True, ncmin=2, reuse_vorofile=False,use_periodic=False)
 series_eq(screen_factor=3*np.ones(3),stride=1,only_last=False,ncmin=2,reuse_vorofile=False,folder="",use_periodic=False)
 
 #Write all the files while sequentially changing the distance mask
